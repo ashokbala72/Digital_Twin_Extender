@@ -7,14 +7,33 @@ from dotenv import load_dotenv
 import os
 import random
 import time
-from openai import OpenAI
+from openai import AzureOpenAI
+from datetime import datetime
+import matplotlib.pyplot as plt
 
+# -----------------------------
 # Load environment variables
+# -----------------------------
 load_dotenv()
 DB_PATH = os.getenv("DB_PATH", "twin_config.db")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_VERSION = "2024-12-01-preview"
+AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-4o-raj"
+
+# -----------------------------
+# Azure OpenAI Client
+# -----------------------------
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version=AZURE_OPENAI_API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+)
+
+# -----------------------------
 # Utility: get configs from DB
+# -----------------------------
 def get_configs():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     c = conn.cursor()
@@ -22,7 +41,9 @@ def get_configs():
     conn.close()
     return rows
 
+# -----------------------------
 # Utility: simulate telemetry
+# -----------------------------
 def simulate_data(twin_type):
     if twin_type == "Well":
         return {
@@ -41,7 +62,9 @@ def simulate_data(twin_type):
     else:
         return {"status": "Simulated", "message": f"No model for twin type: {twin_type}"}
 
+# -----------------------------
 # Utility: fetch live data from API
+# -----------------------------
 def fetch_telemetry(config):
     headers = {}
     if config[4] == "Bearer Token":
@@ -60,7 +83,9 @@ def fetch_telemetry(config):
     except Exception as e:
         return None, str(e)
 
+# -----------------------------
 # Streamlit UI
+# -----------------------------
 st.set_page_config(page_title="Digital Twin Extender", layout="wide")
 st.title("🔌 Digital Twin Extender")
 
@@ -86,8 +111,9 @@ tabs = st.tabs([
     "9. Anomaly Detector"
 ])
 
-
+# -----------------------------
 # Tab 1 - Status
+# -----------------------------
 with tabs[0]:
     st.subheader(f"🛰️ Telemetry Status: {selected_config[1]}")
     data, error = fetch_telemetry(selected_config)
@@ -101,25 +127,22 @@ with tabs[0]:
     else:
         st.error(f"❌ Failed to fetch data and fallback is disabled. Reason: {error}")
 
+# -----------------------------
 # Tab 2 - Live Trend
-from datetime import datetime
-import matplotlib.pyplot as plt
-
-with tabs[1]:  # Tab 2 - Live Trend
+# -----------------------------
+with tabs[1]:
     st.subheader("📈 Live Telemetry Trend")
 
     trend_type = st.selectbox("Metric to Simulate", ["pressure", "temperature", "rpm", "flow_rate"])
     chart_data = []
     timestamps = []
 
-    # Simulate 20 real-time readings with timestamps
     for _ in range(20):
         val = simulate_data(selected_config[2]).get(trend_type, random.uniform(0, 1))
         chart_data.append(val)
         timestamps.append(datetime.now().strftime("%H:%M:%S"))
         time.sleep(0.1)
 
-    # Plot with axis labels using Matplotlib
     fig, ax = plt.subplots()
     ax.plot(timestamps, chart_data, marker="o", linestyle="-")
     ax.set_title(f"Simulated {trend_type.capitalize()} Over Time")
@@ -130,41 +153,36 @@ with tabs[1]:  # Tab 2 - Live Trend
 
     st.pyplot(fig)
 
-
+# -----------------------------
 # Tab 3 - Simulated Forecast
-with tabs[2]:  # Tab 3 - Simulated Forecast
+# -----------------------------
+with tabs[2]:
     st.subheader("🔮 24h Forecast Simulation")
-
-    # Select metric to forecast
     trend_type = st.selectbox("Metric to Forecast", ["pressure", "temperature", "rpm", "flow_rate"])
 
-    # Get starting value from current simulation
     current_data = simulate_data(selected_config[2])
     base_value = current_data.get(trend_type, random.uniform(0, 1))
 
-    # Generate 24-hour forecast with drifting logic
     forecast_data = []
     for h in range(24):
         delta = random.uniform(-5, 5)
-        base_value = max(0, base_value + delta)  # Keep value non-negative
+        base_value = max(0, base_value + delta)
         forecast_data.append({"hour": h, trend_type: round(base_value, 2)})
 
-    # Convert to DataFrame
     df_forecast = pd.DataFrame(forecast_data)
-
-    # Display table and chart
     st.markdown("### Forecast Table")
     st.dataframe(df_forecast)
-
     st.markdown("### Forecast Chart")
     st.line_chart(df_forecast.set_index("hour"), use_container_width=True)
 
-
-# Tab 4 - GenAI Advisor
+# -----------------------------
+# Tab 4 - GenAI Advisor (Azure OpenAI)
+# -----------------------------
 with tabs[3]:
     st.subheader("🧠 GenAI Assistant")
     user_question = st.text_input("Ask something about the twin...", "Why is the pressure fluctuating?")
     twin_data = simulate_data(selected_config[2])
+
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
@@ -174,40 +192,36 @@ with tabs[3]:
             {"role": "user", "content": f"The current telemetry is: {json.dumps(twin_data)}. Question: {user_question}"}
         ]
         try:
-            client = OpenAI(api_key=OPENAI_API_KEY)
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,
                 messages=prompt,
                 max_tokens=200
             )
             reply = response.choices[0].message.content.strip()
             st.session_state.chat_history.append((user_question, reply))
         except Exception as e:
-            st.error(f"Error from OpenAI: {str(e)}")
+            st.error(f"Error from Azure OpenAI: {str(e)}")
 
-    for i, (user, ai) in enumerate(reversed(st.session_state.chat_history)):
+    for user, ai in reversed(st.session_state.chat_history):
         st.markdown(f"**You:** {user}")
         st.markdown(f"**Twin:** {ai}")
 
-# Tab 5 - Placeholder
-with tabs[4]:  # Dashboard Tab
+# -----------------------------
+# Tab 5 - Dashboard
+# -----------------------------
+with tabs[4]:
     st.subheader(f"📊 Twin Dashboard: {selected_config[1]}")
-
-    # Try fetching live telemetry or fallback to simulation
     telemetry_data, err = fetch_telemetry(selected_config)
     if not telemetry_data:
         st.warning("Using simulated data due to fetch failure.")
         telemetry_data = simulate_data(selected_config[2])
 
-    # Show raw data
     st.markdown("### Telemetry Snapshot")
     st.json(telemetry_data)
 
-    # Extract and format metrics
     df_metrics = pd.DataFrame.from_dict(telemetry_data, orient="index", columns=["Value"]).reset_index()
     df_metrics.columns = ["Metric", "Value"]
 
-    # Display KPIs
     st.markdown("### Key Indicators")
     cols = st.columns(min(4, len(df_metrics)))
     for i, row in df_metrics.iterrows():
@@ -215,7 +229,6 @@ with tabs[4]:  # Dashboard Tab
         status_color = "🟢" if isinstance(value, (int, float)) and value > 0 else "🔴"
         cols[i % len(cols)].metric(label=row["Metric"], value=value, delta=status_color)
 
-    # Trend chart if numerical
     numeric_metrics = df_metrics[df_metrics["Value"].apply(lambda x: isinstance(x, (int, float)))]
     if not numeric_metrics.empty:
         st.markdown("### Value Distribution")
@@ -224,19 +237,18 @@ with tabs[4]:  # Dashboard Tab
             "Value": numeric_metrics["Value"]
         }).set_index("Metric")
         st.bar_chart(chart_df, use_container_width=True)
-    else:
-        st.info("No numeric metrics available for charting.")
 
-with tabs[5]:  # Tab 6 - Chat with Twin
+# -----------------------------
+# Tab 6 - Chat with Twin (Azure OpenAI)
+# -----------------------------
+with tabs[5]:
     st.subheader(f"💬 Chat with Digital Twin: {selected_config[1]}")
 
-    # Initialize memory
     if "chat_twin_history" not in st.session_state:
         st.session_state.chat_twin_history = []
 
-    # Get user question
     question = st.text_input("Ask your question:", placeholder="e.g., What if temperature rises by 10%?")
-    twin_data = simulate_data(selected_config[2])  # Or use real data if available
+    twin_data = simulate_data(selected_config[2])
     telemetry_str = json.dumps(twin_data)
 
     if st.button("Submit Question"):
@@ -246,29 +258,28 @@ with tabs[5]:  # Tab 6 - Chat with Twin
             {"role": "user", "content": f"Question: {question}"}
         ]
         try:
-            client = OpenAI(api_key=OPENAI_API_KEY)
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,
                 messages=prompt,
                 max_tokens=200
             )
             reply = response.choices[0].message.content.strip()
             st.session_state.chat_twin_history.append((question, reply))
         except Exception as e:
-            st.error(f"❌ OpenAI Error: {str(e)}")
+            st.error(f"❌ Azure OpenAI Error: {str(e)}")
 
-    # Show chat history
     if st.session_state.chat_twin_history:
         st.markdown("### Chat History")
         for q, a in reversed(st.session_state.chat_twin_history[-10:]):
             st.markdown(f"**You:** {q}")
             st.markdown(f"**Twin:** {a}")
 
-
-with tabs[6]:  # Tab 7 - Actuation Control
+# -----------------------------
+# Tab 7 - Actuation Control
+# -----------------------------
+with tabs[6]:
     st.subheader(f"🛠️ Actuation Control: {selected_config[1]}")
-
-    if not selected_config[8]:  # If fallback mode enabled
+    if not selected_config[8]:
         st.warning("⚠️ Twin is running in fallback simulation mode. Actuation is disabled.")
     else:
         command = st.text_input("Enter Command", placeholder="e.g., set_rpm=1800")
@@ -282,7 +293,7 @@ with tabs[6]:  # Tab 7 - Actuation Control
                 elif selected_config[4] == "Basic Auth":
                     headers = {"Authorization": f"Basic {selected_config[5]}"}
 
-                url = f"{selected_config[3]}{selected_config[8]}"  # API base + actuation endpoint
+                url = f"{selected_config[3]}{selected_config[8]}"
                 response = requests.post(url, headers=headers, json={"command": command}, timeout=5)
 
                 if response.status_code == 200:
@@ -292,26 +303,11 @@ with tabs[6]:  # Tab 7 - Actuation Control
             except Exception as e:
                 st.error(f"⚠️ Error sending command: {str(e)}")
 
-        # Helpful example commands
-        st.markdown("""
-### 💡 Example Commands by Twin Type
-| Twin Type  | Example Command              | Description                            |
-|------------|------------------------------|----------------------------------------|
-| Pump       | `set_rpm=1800`               | Sets pump RPM to 1800                  |
-| Pump       | `start` / `stop`             | Starts or stops the pump               |
-| Well       | `open_valve=A1`              | Opens valve A1                         |
-| Well       | `choke=65`                   | Sets choke opening to 65%              |
-| Pipeline   | `divert_flow=section_3`      | Diverts flow to section 3              |
-| Pipeline   | `set_pressure_limit=1200`    | Updates pressure threshold             |
-| Refinery   | `shutdown_unit=Furnace1`     | Initiates safe shutdown for a unit     |
-| Any        | `diagnostics_mode=on`        | Puts the twin into diagnostics mode    |
-""")
-
-
-
-with tabs[7]:  # Tab 8 - Scenario Simulator
+# -----------------------------
+# Tab 8 - Scenario Simulator (Azure OpenAI)
+# -----------------------------
+with tabs[7]:
     st.subheader(f"🔮 Scenario Simulator: {selected_config[1]}")
-    st.markdown("Simulate what-if scenarios by adjusting telemetry inputs.")
 
     scenario_metric = st.selectbox("Metric to Modify", ["pressure", "temperature", "rpm", "flow_rate"])
     base_data = fetch_telemetry(selected_config)[0] or simulate_data(selected_config[2])
@@ -328,29 +324,12 @@ with tabs[7]:  # Tab 8 - Scenario Simulator
     st.markdown("### 🧠 GenAI Advisory")
     try:
         prompt = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a senior process control engineer responsible for analyzing telemetry and simulation "
-                    "data from industrial digital twins. Your goal is to identify the impact of changes in operational "
-                    "parameters like pressure, rpm, or flow rate on system safety, efficiency, and reliability. Always "
-                    "provide specific engineering insights, causal relationships, and recommended actions. Assume the twin "
-                    "is for a critical energy asset (e.g., pump, pipeline, or well)."
-                )
-            },
+            {"role": "system", "content": "You are a senior process control engineer analyzing digital twin telemetry."},
             {"role": "user", "content": f"Base telemetry data: {json.dumps(base_data)}"},
-            {
-                "role": "user",
-                "content": (
-                    f"Modified scenario data: {json.dumps(modified_data)}. "
-                    "Please compare the two sets, explain the likely cause and impact of the changes, "
-                    "and suggest operational or safety recommendations."
-                )
-            }
+            {"role": "user", "content": f"Modified scenario data: {json.dumps(modified_data)}"}
         ]
-        client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=AZURE_OPENAI_DEPLOYMENT_NAME,
             messages=prompt,
             max_tokens=300
         )
@@ -359,30 +338,23 @@ with tabs[7]:  # Tab 8 - Scenario Simulator
     except Exception as e:
         st.error(f"GenAI error: {str(e)}")
 
-
-
-with tabs[8]:  # Tab 9 - Anomaly Detector
+# -----------------------------
+# Tab 9 - Anomaly Detector (Azure OpenAI)
+# -----------------------------
+with tabs[8]:
     st.subheader(f"⚠️ Telemetry Anomaly Detector: {selected_config[1]}")
     telemetry = fetch_telemetry(selected_config)[0] or simulate_data(selected_config[2])
 
     st.markdown("### 🔍 Current Telemetry")
     st.json(telemetry)
 
-    thresholds = {
-        "pressure": 1400,
-        "temperature": 105,
-        "rpm": 2000,
-        "vibration": 1.4,
-        "flow_rate": 950,
-        "amp_load": 78
-    }
+    thresholds = {"pressure": 1400, "temperature": 105, "rpm": 2000, "vibration": 1.4, "flow_rate": 950, "amp_load": 78}
 
-    st.markdown("### 🚨 Detected Anomalies")
     anomalies = []
     for key, limit in thresholds.items():
         if key in telemetry and isinstance(telemetry[key], (int, float)) and telemetry[key] > limit:
             anomalies.append((key, telemetry[key], limit))
-            st.error(f"{key.capitalize()} = {telemetry[key]} exceeds threshold of {limit}")
+            st.error(f"{key.capitalize()} = {telemetry[key]} exceeds threshold {limit}")
 
     if anomalies:
         st.markdown("### 🧠 GenAI Analysis of Anomalies")
@@ -390,10 +362,10 @@ with tabs[8]:  # Tab 9 - Anomaly Detector
             prompt = [
                 {"role": "system", "content": f"You are a {selected_config[13]} digital twin anomaly analyzer."},
                 {"role": "user", "content": f"Telemetry: {json.dumps(telemetry)}"},
-                {"role": "user", "content": f"Anomalies: {json.dumps(anomalies)}. What is the likely cause or risk?"}
+                {"role": "user", "content": f"Anomalies: {json.dumps(anomalies)}"}
             ]
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,
                 messages=prompt,
                 max_tokens=200
             )
@@ -401,4 +373,4 @@ with tabs[8]:  # Tab 9 - Anomaly Detector
         except Exception as e:
             st.error(f"GenAI error: {str(e)}")
     else:
-        st.success("✅ No anomalies detected based on defined thresholds.")
+        st.success("✅ No anomalies detected.")
